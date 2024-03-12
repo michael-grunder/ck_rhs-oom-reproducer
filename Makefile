@@ -1,5 +1,5 @@
 CC = cc
-CFLAGS ?= -g3 -Wall
+CFLAGS ?= -g3 -Wall -Wextra -pedantic
 SRC = reproducer.c
 OBJ = $(SRC:.c=.o)
 LIBCK_A=ck/src/libck.a
@@ -30,4 +30,3 @@ bear:
 
 clean:
 	rm -rf $(OBJ) debug-* release-* *.o
-

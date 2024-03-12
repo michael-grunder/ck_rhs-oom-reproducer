@@ -11,22 +11,46 @@ class CKRHSPrettyPrinter:
         return self.print_map(map_val)
 
     def print_map(self, map_val):
-        result = "ck_rhs_map entries:\n"
+        lines = []
+
+        mask = int(map_val['mask'])
+        step = int(map_val['step'])
+        pl = int(map_val['probe_limit'])
+        n_ets = int(map_val['n_entries'])
+        capacity = int(map_val['capacity'])
+        sz = int(map_val['size'])
+        max_entries = int(map_val['max_entries'])
+        offset_mask = int(map_val['offset_mask'])
+
+        lines.append("map values:")
+        lines.append(f"         mask {mask:>8}        step {step:>8}")
+        lines.append(f"  probe_limit {pl:>8} offset mask {offset_mask:>8}")
+        lines.append(f"    n_entries {n_ets:>8}    capacity {capacity:>8}")
+        lines.append(f"         size {sz:>8} max_entries {max_entries:>8}")
+
+        lines.append("map buckets:")
+
         mask = map_val['mask']
         entries = map_val['entries']['descs']
-        for i in range(mask + 1):  # Iterates correctly from 0 to mask
+        for i in range(mask + 1):
             entry = entries[i]
             probes = entry['probes']
             wanted = entry['wanted']
-            probe_bound = entry['probe_bound']
-            in_rh = entry['in_rh']
+            probe_bound = int(entry['probe_bound'])
+            in_rh = 'T' if entry['in_rh'] else 'F'
             entry_ptr = entry['entry']
+
+            line = (f"  {i}) probes: {probes}, wanted: {wanted}, "
+                    f"probe_bound: {probe_bound:d}, in_rh: {in_rh}")
+
             if entry_ptr != 0:
-                entry_key = entry_ptr.cast(gdb.lookup_type('char').pointer()).string()
-                result += f"[{i}] probes: {probes}, wanted: {wanted}, probe_bound: {probe_bound}, in_rh: {in_rh}, entry: {entry_key}\n"
+                line += f", entry: {entry_ptr}"
             else:
-                result += f"[{i}] probes: {probes}, wanted: {wanted}, probe_bound: {probe_bound}, in_rh: {in_rh}, entry: NULL\n"
-        return result
+                line += f", entry: NULL"
+
+            lines.append(line)
+
+        return "\n".join(lines)
 
 def print_rhs_t(rhs_val):
     printer = CKRHSPrettyPrinter(rhs_val)
@@ -40,15 +64,16 @@ class PrintRHSTCommand(gdb.Command):
         super(PrintRHSTCommand, self).__init__("print_rhs_t", gdb.COMMAND_DATA)
 
     def invoke(self, arg, from_tty):
-        # Parse argument as an expression to a ck_rhs_t instance
-        if not arg:
+        args = gdb.string_to_argv(arg)
+
+        if len(args) < 1:
             print("Usage: print_rhs_t <ck_rhs_t variable>")
             return
+
         try:
-            rhs_val = gdb.parse_and_eval(arg)
+            rhs_val = gdb.parse_and_eval(args[0])
             print_rhs_t(rhs_val)
         except gdb.error as e:
             print(f"Error: {str(e)}")
 
 PrintRHSTCommand()
-

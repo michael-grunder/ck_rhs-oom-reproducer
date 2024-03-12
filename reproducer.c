@@ -2,34 +2,44 @@
 #include <ck_rhs.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <sys/time.h>
 
 typedef struct opts {
     bool fail_to_allocate;
     bool read_mostly;
+    size_t limit;
     bool silent;
-    bool reverse;
-    bool djb3;
-} opts;;
+    bool verbose;
+} opts;
 
-static const char *key[] = {
-    "0",
-    "1",
-    "2",
-    "3",
-    "4",
-    "5",
-    "6",
-    "7",
-    "8",
+static const void *key[] = {
+    (void*)0x1,
+    (void*)0x2,
+    (void*)0x3,
+    (void*)0x4,
+    (void*)0x5,
+    (void*)0x6,
+    (void*)0x9,
+    (void*)0xa,
+    (void*)0xb,
 };
 
-static opts g_opts = {true, false, false, false, false};
+static opts g_opts = {
+    .fail_to_allocate = true
+};
 
 #define logStatus(fmt, ...) \
     do { \
         if (g_opts.silent != true) { \
             fprintf(stderr, fmt "\n", __VA_ARGS__); \
         } \
+    } while (0)
+
+#define panic(fmt, ...) \
+    do { \
+        fprintf(stderr, fmt "\n", __VA_ARGS__); \
+        exit(1); \
     } while (0)
 
 /* Allow the initial map allocation, then fail */
@@ -57,44 +67,15 @@ static struct ck_malloc rhs_allocators = {
 };
 
 static bool rhs_cmp(const void *a, const void *b) {
-    return !strcmp(a, b);
-}
+    if (g_opts.verbose)
+        logStatus("    %p %s %p", a, a == b ? "==" : "!=", b);
 
-unsigned long adderHash(const void *p, unsigned long seed) {
-    unsigned long h = 0;
-    const char *key = p;
-    (void)seed;
-
-    if (strlen(key) != 1 || !strpbrk(key, "012345678")) {
-        logStatus("    '%s' is not a proper toy key", (const char *)p);
-        exit(1);
-    }
-
-    while (*key) {
-        h += *key++ - '0';
-    }
-
-    return h;
-}
-
-unsigned long djb3(const void *p, unsigned long seed) {
-    unsigned long hash = 5381;
-    const char *key = p;
-
-    while (*key) {
-        hash = ((hash << 5) + hash) + *key++;
-    }
-
-    return hash ^ seed;
+    return a == b;
 }
 
 static unsigned long hashFn(const void *p, unsigned long seed) {
-    unsigned long h = g_opts.djb3 ? djb3(p, seed) : adderHash(p, seed);
-
-    //logStatus("    '%s' hashes to %lu (%s)", (const char *)p, h,
-    //          g_opts.djb3 ? "djb3" : "adder");
-
-    return h;
+    (void)seed;
+    return (uintptr_t)p;
 }
 
 static void printUsage(const char *prog) {
@@ -104,8 +85,8 @@ static void printUsage(const char *prog) {
     fprintf(stderr, "    --nofail         don't fail to allocate\n");
     fprintf(stderr, "    --read-mostly    set read mostly mode\n");
     fprintf(stderr, "    --silent         don't print status messages\n");
-    fprintf(stderr, "    --reverse        Delete from back to front\n");
-    fprintf(stderr, "    --djb3           Use the djb3 hash function\n");
+    fprintf(stderr, "    --limit          Limit keys added\n");
+    fprintf(stderr, "    --verbose        print individual rhs comparisons\n");
     exit(1);
 }
 
@@ -121,10 +102,11 @@ void parseOpts(int argc, char *argv[]) {
             g_opts.read_mostly = true;
         } else if (!strcasecmp(argv[0], "--silent")) {
             g_opts.silent = true;
-        } else if (!strcasecmp(argv[0], "--reverse")) {
-            g_opts.reverse = true;
-        } else if (!strcasecmp(argv[0], "--djb3")) {
-            g_opts.djb3 = true;
+        } else if (!strcasecmp(argv[0], "--verbose")) {
+            g_opts.verbose = true;
+        } else if (!strcasecmp(argv[0], "--limit") && argc > 1) {
+            g_opts.limit = strtoul(argv[1], NULL, 10);
+            argc--; argv++;
         } else {
             printUsage(program);
             exit(1);
@@ -134,86 +116,71 @@ void parseOpts(int argc, char *argv[]) {
     }
 }
 
-static void reverseKeys(char **key, size_t n) {
-    for (size_t i = 0; i < n / 2; i++) {
-        char *tmp = key[i];
-        key[i] = key[n - 1 - i];
-        key[n - 1 - i] = tmp;
-    }
-}
-
 int main(int argc, char **argv) {
-    char *old, *inset[10], *deleted;
+    void *old, *inset[10], *deleted;
     ck_rhs_iterator_t it;
+    size_t n = 0, limit;
+    int flags, res = 0;
     unsigned long h;
     ck_rhs_t rhs;
-    size_t n = 0;
-    int flags;
 
     parseOpts(argc, argv);
 
-    logStatus("fail_to_allocate: %s, read_mostly: %s, reverse: %s",
+    logStatus("fail_to_allocate: %s, read_mostly: %s, limit: %zu",
               g_opts.fail_to_allocate ? "yes" : "no",
               g_opts.read_mostly ? "yes" : "no",
-              g_opts.reverse ? "yes" : "no");
+              g_opts.limit);
 
-    flags = CK_RHS_MODE_OBJECT;
+    flags = CK_RHS_MODE_DIRECT;
     if (g_opts.read_mostly)
         flags |= CK_RHS_MODE_READ_MOSTLY;
 
     if (ck_rhs_init(&rhs, flags, hashFn, rhs_cmp,
                     &rhs_allocators, 8, 0) == false)
     {
-        logStatus("%s", "ck_rhs_init failed");
-        exit(1);
+        panic("%s", "ck_rhs_init failed");
+        return 1;
     }
 
+    limit = sizeof(key) / sizeof(*key);
+    if (g_opts.limit && g_opts.limit < limit)
+        limit = g_opts.limit;
+
     logStatus("--- Adding %zu elements ---", sizeof(key) / sizeof(*key));
-    for (size_t i = 0; i < sizeof(key) / sizeof(*key); i++) {
+    for (size_t i = 0; i < limit; i++) {
         struct ck_rhs_stat stat;
         ck_rhs_stat(&rhs, &stat);
 
         h = hashFn(key[i], 0);
-        logStatus("[%zu] Attmpting to add '%s'@%p", i, key[i], key[i]);
+        logStatus("[%zu] Attmpting to add %p", i, key[i]);
         if (ck_rhs_set(&rhs, h, key[i], (void**)&old) == false)
-            logStatus("    Failed to insert: '%s'@%p", key[i], key[i]);
+            logStatus("    Failed to insert: %p", key[i]);
         if (old != NULL) {
-            logStatus("%s", "    We shouldn't see any duplicates!");
-            exit(1);
+            panic("%s", "    We shouldn't see any duplicates!");
         }
     }
 
-    logStatus("--- Iterating over ck_rhs_t with %zu elements ---",
-              ck_rhs_count(&rhs));
     ck_rhs_iterator_init(&it);
     while (ck_rhs_next(&rhs, &it, (void**)&inset[n]) == true) {
-        logStatus("[%zu] '%s'@%p", n, inset[n], inset[n]);
         n++;
     }
 
-    if (g_opts.reverse)
-        reverseKeys(inset, n);
-
     logStatus("--- Removing %zu elements ---", n);
-    for (size_t i = 0; i < n; i++) {
-        h = hashFn(inset[i], 0);
-        logStatus("[%zu] Attempting to remove '%s'@%p", i, inset[i], inset[i]);
-        deleted = ck_rhs_remove(&rhs, h, inset[i]);
+
+    for (size_t i = 0; res == 0 && i < n; i++) {
+        logStatus("[%zu] Attempting to remove %p", i, inset[i]);
+        deleted = ck_rhs_remove(&rhs, hashFn(inset[i], 0), inset[i]);
         if (deleted == inset[i]) {
-            logStatus("    OK '%s'@%p == '%s'@%p",
-                      deleted, deleted, inset[i], inset[i]);
+            logStatus("    OK %p == %p", deleted, inset[i]);
         } else if (deleted == NULL) {
-            logStatus("    ERR Failed to remove '%s'@%p (not found)",
-                    inset[i], inset[i]);
-            ck_rhs_destroy(&rhs);
-            exit(1);
+            logStatus("    ERR Failed to remove %p (not found)", inset[i]);
+            res = 1;
         } else {
-            logStatus("    ERR Failed to remove '%s'@%p != '%s'@%p",
-                    deleted, deleted, inset[i], inset[i]);
-            ck_rhs_destroy(&rhs);
-            exit(1);
+            logStatus("    ERR Failed to remove %p != %p", deleted, inset[i]);
+            res = 1;
         }
     }
 
-    return 0;
+    ck_rhs_destroy(&rhs);
+    return res;
 }
